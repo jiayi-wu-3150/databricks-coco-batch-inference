@@ -17,7 +17,7 @@ is MLflow-native and parameterized via **job params / widgets** (no code edits t
 | # | Pattern | Compute | Total job time (billed) | Script wall | Time breakdown |
 |---|---------|---------|:-----------------------:|:-----------:|----------------|
 | **P1** | Single model, **serial** writes | Serverless GPU (1×A10) | ~848s | 740s | model_read 29s · inference 75s · **write 635s** |
-| **P2** | Single model, **32-thread parallel** writes | Serverless GPU (1×A10) | 295–594s | **155s (warm) / 358s (cold)** | model_read 26s · inference ~50s · **write 66s (warm) / 288s (cold)** |
+| **P2** | Single model, **32-thread parallel** writes | Serverless GPU (1×A10) | ~460s | **358s (cold)** · 155s (warm) | model_read 26s · inference ~50s · **write 288s (cold)** / 66s (warm) |
 | **P3** | Spark UDF `mapInPandas` (distributed) | Serverless Spark CPU (128p) | ~457s | 387s | distributed read+infer+write (not split) |
 | **P4** | Auto Loader binary → UDF (distributed) | Serverless Spark CPU (128p) | ~513s | 438s | ingest 68s · infer+write 368s |
 | **P5** | Ray Data 3-stage (CPU→GPU→CPU) | Serverless GPU (Ray, 1×A10) | ~441s | 350s | model_read 30s · pipeline 308s |
@@ -33,9 +33,49 @@ is MLflow-native and parameterized via **job params / widgets** (no code edits t
    warm** (total 358s → 155s), while GPU compute stayed flat. **Serial writes (P1) stay under
    the throttle limit → consistent but slow; parallel writes (P2) burst over it → fast but
    variable.** Distributed-CPU (P3/P4) additionally swing ±25% with autoscaled worker count.
+   **Every pattern above is reported at its *cold* single-run number so the comparison is
+   apples-to-apples** — including P2 (358s cold). P2's 155s warm run is its best-case upside,
+   not its comparable figure.
 
 **Correctness:** P6 (endpoint) vs P3 (direct inference) match **99.95%** (3923/3925; 2 borderline
 argmax flips from GPU fp16 vs CPU fp32) — the served model is equivalent to direct inference.
+
+## Summary — Imagenette val, 3,925 images (small JPEGs, nested class dirs)
+
+Same 3,925-image count as COCO, so the only variables are **image size** (Imagenette is much
+smaller per file) and **layout** (nested `class/*.JPEG` vs COCO's flat, larger `.jpg`). All
+**cold single runs**, script wall.
+
+| # | Pattern | Compute | Script wall | Time breakdown |
+|---|---------|---------|:-----------:|----------------|
+| **P1** | serial writes | Serverless GPU (1×A10) | 629s | model_read 25s · inference 43s · **write 560s** |
+| **P2** | 32-thread parallel | Serverless GPU (1×A10) | **345s** | model_read 27s · inference 34s · **write 283s** |
+| **P3** | Spark UDF (distributed) | Serverless Spark CPU (128p) | 417s | distributed read+infer+write |
+| **P4** | Auto Loader → UDF | Serverless Spark CPU (128p) | 522s | ingest 97s · infer+write 424s |
+| **P5** | Ray Data 3-stage | Serverless GPU (Ray, 1×A10) | **350s** | model_read 39s · pipeline 299s |
+| **P6** | `ai_query` → GPU endpoint | GPU endpoint + Serverless CPU | 441s | base64 39s · **ai_query 195s** · write 206s |
+
+## COCO vs Imagenette — the winner is *not* always the same
+
+Both runs are 3,925 images, cold, single-run — so this isolates image size + file layout.
+
+| Pattern | COCO (≈159 KB `.jpg`, flat) | Imagenette (small `.JPEG`, nested) | What changed |
+|---------|:---------------------------:|:----------------------------------:|--------------|
+| **P1** serial | 740s | 629s | smaller files → faster per-write, but still write-bound & slowest |
+| **P2** parallel | 358s | **345s** | ~flat; fastest-tier on both (cold) |
+| **P3** Spark UDF | 387s | 417s | +8% |
+| **P4** Auto Loader | 438s | 522s | **+19%** — nested-dir listing + many tiny files cost more at ingest |
+| **P5** Ray staged | 350s | **350s** | **identical — GPU-compute-bound, so dataset-size-independent** |
+| **P6** ai_query | 374s | 441s | **+18%** — `ai_query` phase 104s→195s (more per-image endpoint round-trips) |
+
+**Takeaways:**
+- **No single winner.** COCO-cold fastest tier is P5 (350) ≈ P2 (358); Imagenette-cold it's
+  P2 (345) ≈ P5 (350). P2 *warm* (~155s) would win either — but it's the least consistent.
+- **P5 (Ray) is the most dataset-stable** — 350s on both, because time is dominated by the
+  single GPU inference stage, not by file size or count.
+- **File *layout and count* matter as much as total bytes.** The patterns that lean on
+  directory listing / per-file endpoint calls (P4 ingest, P6 `ai_query`) are the ones that
+  slow down on Imagenette's many small nested files, even though the total data is smaller.
 
 ## Comparison across dimensions
 
@@ -44,7 +84,7 @@ Legend: 🟢 strong · 🟡 moderate · 🔴 weak (relative to the others, this 
 | Pattern | Latency (warm) | Consistency | Ease / simplicity | Cost | Scalability | Reuse / governance |
 |---------|:--------------:|:-----------:|:-----------------:|:----:|:-----------:|:------------------:|
 | **P1** GPU serial | 🔴 740s (slowest) | 🟢 stable (serial stays under S3 throttle) | 🟢 simplest | 🟡 GPU but ~14 min | 🔴 single node, serial I/O | 🔴 one-off job |
-| **P2** GPU parallel | 🟢 ~155s (fastest) | 🔴 2.3× cold/warm swing | 🟢 simple (+ thread pool) | 🟢 cheapest (fast GPU) | 🟡 single node; tune `write_workers` | 🔴 one-off job |
+| **P2** GPU parallel | 🟡 358s cold (155s warm) | 🔴 2.3× cold/warm swing | 🟢 simple (+ thread pool) | 🟢 short GPU run | 🟡 single node; tune `write_workers` | 🔴 one-off job |
 | **P3** Spark UDF (CPU) | 🟡 387s | 🟡 ±25% (autoscale) | 🟡 UDF + model materialize | 🔴 autoscaled CPU workers pricey | 🟢 horizontal | 🔴 one-off job |
 | **P4** Auto Loader (CPU) | 🟡 438s | 🟡 ±25% (autoscale) | 🟡 two-stage (ingest+infer) | 🔴 autoscaled CPU + ingest | 🟢 horizontal + incremental ingest | 🟡 reusable binary table |
 | **P5** Ray staged (GPU) | 🟢 350s | 🟢 GPU-bound, stable | 🔴 Ray/AIR + staged pipeline | 🟢 GPU ~7 min | 🟢 scales to multi-GPU | 🔴 one-off job |
@@ -57,12 +97,13 @@ Legend: 🟢 strong · 🟡 moderate · 🔴 weak (relative to the others, this 
   limit — but that same seriality makes it the slowest (write = 86% of wall). Use as the
   correctness reference, not for speed.
 
-- **P2 — GPU parallel.** Same as P1 with a `write_workers`-thread pool over the writes. When
-  the prefix/caches are warm it's the **fastest pattern (~155s)** and the **cheapest** (short
-  GPU run). But it's the **least consistent** — the parallel write burst is exactly what
-  trips S3 throttling on a cold prefix (→ 358s). Great default *if* you warm the target or
-  tolerate variance; tune `write_workers`. (On *tiny* images it backfires — FUSE metadata
-  contention.)
+- **P2 — GPU parallel.** Same as P1 with a `write_workers`-thread pool over the writes. On a
+  **cold prefix (its comparable number) it lands at 358s** — right in the pack with P5/P3/P6 —
+  because the parallel write burst is exactly what trips S3 throttling. Warm the prefix and it
+  becomes the **fastest pattern (~155s)**, but that's a best case, not the comparable figure.
+  So P2 is the **least consistent** (2.3× swing): a great default *if* you warm the target or
+  tolerate variance; tune `write_workers`. (On Imagenette's tiny nested files it held ~345s —
+  no backfire in the clean run — so its cold cost tracks COCO.)
 
 - **P3 — Spark UDF (CPU, distributed).** No GPU needed; fans inference + writes across
   autoscaled Spark workers, so writes are spread over many prefixes/tasks (less single-node
