@@ -1,191 +1,101 @@
-# Databricks COCO Batch Inference — Pattern Comparison (P1–P7)
+# Clean Batch-Inference Benchmark (P1–P6) — MLflow-native, user-iterable
 
-Six batch-inference patterns for running a ViT image classifier over **COCO val2017**
-images on **Databricks serverless compute**, benchmarked head-to-head. The goal is to
-compare *compute strategies* (single-node GPU, distributed CPU, Ray, model-serving) and
-*I/O strategies* (serial vs. parallel vs. distributed writes) on the same workload.
+Six batch-inference patterns for a ViT image classifier, benchmarked on the same clean
+UC model and dataset so you can **swap in your own model + images and re-run**. Everything
+is MLflow-native and parameterized via **job params / widgets** (no code edits to re-target).
 
-All patterns run the same weight-averaged "soup" ViT model over the first **3,925 COCO
-val2017 images** (~159 KB avg — ~20× larger than Imagenette) and write annotated JPEGs
-back to a Unity Catalog Volume. Since the model is Imagenette-trained, labels are not
-meaningful on COCO — **these experiments measure timing/throughput, not accuracy.**
-(P5 = the "P1-on-COCO" baseline itself, so it isn't a separate entry here.)
+- **Model:** `…cv.bench_vit@prod` (transformers) — batch patterns load `models:/…bench_vit@prod`.
+  `…cv.bench_vit_serving@prod` (pyfunc, base64→`{label,score}`) backs the P6 endpoint.
+- **Labels** auto-derived from the model's `id2label` (works for any HF classifier).
+- **Outputs** namespaced per dataset (`bench_out_pX/<dataset>/…`); phase timings logged to a
+  shared MLflow experiment.
+- **Setup:** run [`00_setup_register_model.py`](00_setup_register_model.py) once (registers the
+  two models, creates volumes, and — optionally — deploys the GPU serving endpoint for P6).
 
-## The patterns
+## Summary — COCO val2017, 3,925 images (~159 KB avg)
 
-| Dir | Pattern | Compute | I/O strategy |
-|-----|---------|---------|--------------|
-| [`p1_soup_serial/`](p1_soup_serial/inference_p1_coco.py) | Single soup model, one forward pass | Serverless GPU (1×A10) | **Serial** annotate + write |
-| [`p2_soup_parallel_io/`](p2_soup_parallel_io/inference_p2_coco.py) | Single soup model, one forward pass | Serverless GPU (1×A10) | **32-thread** parallel writes |
-| [`p3_udf_batch/`](p3_udf_batch/inference_p3_coco.py) | `mapInPandas` Spark UDF | Serverless Spark (CPU, 128 partitions) | **Distributed** writes across executors |
-| [`p4_autoloader_binary/`](p4_autoloader_binary/inference_p4_coco.py) | Auto Loader → binary Delta table → UDF | Serverless Spark (CPU, 128 partitions) | Distributed ingest + writes |
-| [`p6_ai_query/`](p6_ai_query/) | `ai_query` → **GPU model-serving endpoint** (inference-only) | GPU endpoint + CPU caller | CPU does base64 + `ai_query` + distributed writes |
-| [`p7_ray_staged/`](p7_ray_staged/) | **Ray Data** 3-stage: CPU decode → GPU infer → CPU write | Serverless GPU (Ray, 1×A10) | Distributed CPU write actors (off the GPU) |
+| # | Pattern | Compute | Total job time (billed) | Script wall | Time breakdown |
+|---|---------|---------|:-----------------------:|:-----------:|----------------|
+| **P1** | Single model, **serial** writes | Serverless GPU (1×A10) | ~848s | 740s | model_read 29s · inference 75s · **write 635s** |
+| **P2** | Single model, **32-thread parallel** writes | Serverless GPU (1×A10) | 295–594s | **155s (warm) / 358s (cold)** | model_read 26s · inference ~50s · **write 66s (warm) / 288s (cold)** |
+| **P3** | Spark UDF `mapInPandas` (distributed) | Serverless Spark CPU (128p) | ~457s | 387s | distributed read+infer+write (not split) |
+| **P4** | Auto Loader binary → UDF (distributed) | Serverless Spark CPU (128p) | ~513s | 438s | ingest 68s · infer+write 368s |
+| **P5** | Ray Data 3-stage (CPU→GPU→CPU) | Serverless GPU (Ray, 1×A10) | ~441s | 350s | model_read 30s · pipeline 308s |
+| **P6** | `ai_query` → GPU serving endpoint + CPU write | GPU endpoint + Serverless CPU | ~405s | 374s | base64 55s · ai_query 104s · **write 214s** |
 
-## Results (3,925 COCO images, all write-inclusive)
+**Two timing caveats (read before ranking):**
+1. **Billed job time = script wall + a fixed ~70–110s** of serverless startup + environment
+   install (torch / `databricks_ai_v5` / Ray). Compare *patterns* with **script wall**; plan
+   *cost/wall-clock* with **billed**.
+2. **Write-bound patterns (P1, P2, P3, P4, P6) are cold/warm sensitive.** Writing thousands
+   of annotated JPEGs to a UC Volume is object-store (S3) I/O: a fresh prefix throttles
+   (`503 SlowDown` → retries), a warmed one flies. Measured on P2: **write 288s cold → 66s
+   warm** (total 358s → 155s), while GPU compute stayed flat. **Serial writes (P1) stay under
+   the throttle limit → consistent but slow; parallel writes (P2) burst over it → fast but
+   variable.** Distributed-CPU (P3/P4) additionally swing ±25% with autoscaled worker count.
 
-| Rank | Pattern | Compute | **Total wall** | Notes |
-|:----:|---------|---------|:--------------:|-------|
-| 🥇 1 | **P6** — `ai_query` → GPU endpoint + CPU write | GPU endpoint + CPU | **255s** | inference offloaded to endpoint; 100% match, 0 failures |
-| 🥈 2 | **P7** — Ray Data 3-stage | Serverless GPU | **345s** | staged CPU→GPU→CPU-write; fixes v1 (was 3,804s) |
-| 🥉 3 | **P2** — GPU + 32-thread writes | Serverless GPU | **402s** | write 303s |
-| 4 | **P3** — Spark UDF (CPU) | Serverless CPU | **507s** | distributed |
-| 5 | **P4** — Auto Loader + UDF (CPU) | Serverless CPU | **591s** | + ingest |
-| 6 | **P1** — GPU + serial writes | Serverless GPU | **741s** | write 546s = 74% |
+**Correctness:** P6 (endpoint) vs P3 (direct inference) match **99.95%** (3923/3925; 2 borderline
+argmax flips from GPU fp16 vs CPU fp32) — the served model is equivalent to direct inference.
 
-### Key findings
-1. **This workload is I/O-bound on writes, not compute.** GPU inference is only ~78s;
-   P1's serial annotated-JPEG write to the UC Volume is 546s = 74% of its runtime.
-2. **Parallelizing writes is the biggest single win.** P2's thread pool cut the write
-   phase 546s → 303s and total time 741s → 402s (**1.8× faster**) on identical hardware.
-3. **Distributing to CPU (P3/P4) beats serial-GPU but not parallel-GPU** for this size —
-   it avoids single-node FUSE write contention but pays CPU inference + Spark overhead.
-4. **Write cost is per-file, not per-byte.** P1's serial write barely grew vs. the tiny
-   Imagenette baseline despite COCO files being ~20× larger — the cost is FUSE metadata
-   round-trips per file.
+## Comparison across dimensions
 
-> ⚠️ **The winner is not always the same — it depends on image size.** On *tiny* images
-> (Imagenette, ~7.8 KB), P2's 32-thread writes **backfire** (severe FUSE metadata
-> contention from many concurrent small-file creates) and the distributed-CPU P3 wins
-> instead. On *large* images (COCO, ~159 KB), parallel-GPU writes (P2) win. Same 3,925
-> images both times:
->
-> | Pattern | Imagenette wall | COCO wall |
-> |---------|:---------------:|:---------:|
-> | P1 — GPU serial | 633s | 741s |
-> | P2 — GPU parallel | 1,872s ⚠️ | **402s** 🥇 |
-> | P3 — CPU UDF | **431s** 🥇 | 507s |
-> | P4 — CPU autoloader | 711s | 591s |
->
-> **Winner flips: P3 on Imagenette, P2 on COCO.** These four scripts are provided as
-> **reference templates and a benchmark harness**, not a one-size-fits-all recommendation.
+Legend: 🟢 strong · 🟡 moderate · 🔴 weak (relative to the others, this workload).
 
-### What determines the best pattern
+| Pattern | Latency (warm) | Consistency | Ease / simplicity | Cost | Scalability | Reuse / governance |
+|---------|:--------------:|:-----------:|:-----------------:|:----:|:-----------:|:------------------:|
+| **P1** GPU serial | 🔴 740s (slowest) | 🟢 stable (serial stays under S3 throttle) | 🟢 simplest | 🟡 GPU but ~14 min | 🔴 single node, serial I/O | 🔴 one-off job |
+| **P2** GPU parallel | 🟢 ~155s (fastest) | 🔴 2.3× cold/warm swing | 🟢 simple (+ thread pool) | 🟢 cheapest (fast GPU) | 🟡 single node; tune `write_workers` | 🔴 one-off job |
+| **P3** Spark UDF (CPU) | 🟡 387s | 🟡 ±25% (autoscale) | 🟡 UDF + model materialize | 🔴 autoscaled CPU workers pricey | 🟢 horizontal | 🔴 one-off job |
+| **P4** Auto Loader (CPU) | 🟡 438s | 🟡 ±25% (autoscale) | 🟡 two-stage (ingest+infer) | 🔴 autoscaled CPU + ingest | 🟢 horizontal + incremental ingest | 🟡 reusable binary table |
+| **P5** Ray staged (GPU) | 🟢 350s | 🟢 GPU-bound, stable | 🔴 Ray/AIR + staged pipeline | 🟢 GPU ~7 min | 🟢 scales to multi-GPU | 🔴 one-off job |
+| **P6** ai_query endpoint | 🟡 374s | 🟡 write + endpoint concurrency (429 retries) | 🔴 deploy endpoint + pyfunc wrapper | 🟡 CPU job + GPU endpoint (scale-to-zero) | 🟢 endpoint concurrency + SQL fan-out | 🟢 governed, reusable, SQL-callable |
 
-Image size is only one axis. The right choice depends on many factors — benchmark on
-*your* workload:
+## Notes per pattern
 
-- **Do you write images at all?** These examples annotate + write a JPEG per image, which
-  is the dominant cost. If you only need predictions to a Delta table (no image output),
-  the write bottleneck disappears and GPU inference dominates — a completely different
-  ranking.
-- **Image size & count** — large files favor parallel-GPU writes (P2); many tiny files
-  favor distributed writes (P3/P4) and punish thread-pool writes (FUSE contention).
-- **Parallelism knobs** — P2's `WRITE_WORKERS` (thread count) and P3/P4's `NUM_PARTITIONS`
-  are tunable and materially change results; the values here are starting points.
-- **Ensemble orchestration** — a single weight-averaged *soup* model = one load + one
-  forward pass (what these scripts use). A *logit ensemble* over N checkpoints = N loads +
-  N passes, which shifts the balance heavily toward `model_read`/inference cost.
-- **Where the model lives / how it loads** — each path has different load cost and
-  executor-distribution implications:
-  - **Registered in UC** (`models:/<catalog>.<schema>.<model>/<version>`) — clean
-    versioning; each executor needs UC auth to pull, so these scripts materialize it to a
-    Volume once on the driver.
-  - **Artifacts on a UC Volume** — executors load with plain `from_pretrained(volume_path)`,
-    no MLflow/auth on workers (how P3/P4 distribute).
-  - **Loaded from an MLflow experiment run** — convenient during dev, but run-artifact
-    reads can be the slowest load path (the original backend comparison saw MLflow model
-    read dominate).
+- **P1 — GPU serial.** The baseline. Dead simple (load model, one forward pass, write in a
+  loop) and the *most consistent* because serial writes never exceed S3's per-prefix rate
+  limit — but that same seriality makes it the slowest (write = 86% of wall). Use as the
+  correctness reference, not for speed.
 
-## P6 — `ai_query` against a GPU model-serving endpoint
+- **P2 — GPU parallel.** Same as P1 with a `write_workers`-thread pool over the writes. When
+  the prefix/caches are warm it's the **fastest pattern (~155s)** and the **cheapest** (short
+  GPU run). But it's the **least consistent** — the parallel write burst is exactly what
+  trips S3 throttling on a cold prefix (→ 358s). Great default *if* you warm the target or
+  tolerate variance; tune `write_workers`. (On *tiny* images it backfires — FUSE metadata
+  contention.)
 
-Batch inference by calling a **model-serving endpoint** from SQL with `ai_query`. Split of
-labor: the **GPU endpoint does inference only** (base64 image in → `{label, score}` out),
-and **serverless CPU** does everything else — read raw JPEGs → base64 table, `ai_query`,
-then distributed annotate + write. End-to-end (255s) = base64 54s · `ai_query` 103s
-(38 img/s) · annotate+write 97s.
+- **P3 — Spark UDF (CPU, distributed).** No GPU needed; fans inference + writes across
+  autoscaled Spark workers, so writes are spread over many prefixes/tasks (less single-node
+  contention). Costs more (autoscaled CPU DBUs) and swings ±25% with how many workers spin
+  up. Good when you have no GPU or want pure horizontal scale.
 
-- **Deployment shape is what matters, not GPU vs CPU.** A raw `mlflow.transformers` model
-  served directly fails to load. The fix is a custom `pyfunc` wrapper with a real
-  `ModelSignature` (`image` string in → `label,score` out). See
-  [`deploy_vit_aiquery.py`](p6_ai_query/deploy_vit_aiquery.py).
-- **`workload_type` gotcha:** the SDK's `ServedEntityInput.workload_type` wants the
-  **`ServingModelWorkloadType.GPU_SMALL` enum**, not the string `"GPU_SMALL"` (the REST
-  API accepts the string, the Python SDK does not → `AttributeError: 'str' … 'value'`).
-- **Inference-only endpoint = writes are decoupled.** Annotated images are written by the
-  CPU caller *after* `ai_query`, so a 429 can never produce a half/bad image. `ai_query`
-  auto-retries throttling; with default `failOnError=true` a request is either retried to a
-  200 (image written normally) or the whole query fails (nothing written). Validate on the
-  **output** (completeness + correctness), not the 429 count — retried 429s are invisible.
-- **Correctness:** predictions matched the direct-inference pattern (P3) **100%** across all
-  3,925 rows. Concurrency left at the endpoint default (`workload_size=Small`).
+- **P4 — Auto Loader → UDF (CPU, distributed).** P3 plus an incremental **binary-ingest**
+  stage (`cloudFiles`), which decouples ingestion from inference and enables reprocessing /
+  streaming. Pays an extra ingest phase (~68s here) and the same CPU inference cost. Best
+  when ingestion is ongoing or you want a reusable binary table.
 
-## P7 — Ray Data staged pipeline
+- **P5 — Ray Data staged (GPU).** Three Ray stages: autoscaled CPU decode → single GPU
+  inference actor (model loaded once) → autoscaled CPU annotate+write. Keeps the GPU fed and
+  writes off the GPU actor, so it's fast (~350s) and GPU-stable. The trade is complexity
+  (Ray/AI-Runtime) and scales cleanly to multi-GPU. *(Anti-pattern to avoid: doing decode +
+  per-image writes inside the GPU actor pins the GPU at 0% — that was ~11× slower.)*
 
-**Ray Data** on serverless GPU, following the Databricks industry-solutions reference:
-three stages — `.map` CPU decode (autoscaled) → `.map_batches` GPU inference
-(`num_gpus=1`, model loaded once) → `.map` CPU annotate+write. Writes stay **off** the GPU
-actor. See [`inference_p7_ray_staged.py`](p7_ray_staged/inference_p7_ray_staged.py); launch
-via the `air` CLI ([`train_p7_ray_v2.yaml`](p7_ray_staged/train_p7_ray_v2.yaml)) or as a
-Jobs-API GPU notebook task (same config as P1/P2 + `ray[data]`).
+- **P6 — `ai_query` → GPU serving endpoint.** Inference is offloaded to a **reusable, governed
+  GPU endpoint** callable from **SQL** (`ai_query`); the CPU Spark job does base64 + the
+  `ai_query` fan-out + distributed writes. Most complex to stand up (pyfunc wrapper w/
+  signature, endpoint deploy — do it in setup so its build time isn't in P6). Unique wins:
+  the endpoint is shared/versioned and usable outside this job, and throughput scales with
+  endpoint concurrency (which auto-retries 429s). Costs two compute resources at once (CPU +
+  GPU endpoint), though scale-to-zero limits idle cost. The base64 round-trip (~55s) is a
+  serialization tax intrinsic to crossing the endpoint boundary.
 
-> ⚠️ **Anti-pattern (kept as [`ray_v1_broken_reference.py`](p7_ray_staged/ray_v1_broken_reference.py)):**
-> the first version did decode **and** a per-image FUSE write **inside a single GPU actor**
-> (`concurrency=1`). The GPU sat at **0% utilization** and it took **3,804s** (1.04 img/s)
-> on 3,925 images. Separating CPU decode/write into their own autoscaled Ray stages (and
-> keeping the GPU actor pure inference) took it to **345s** with real GPU usage — a ~11×
-> speedup, and the fastest write-inclusive GPU-native pattern here.
+## Run it on your own model / images
 
-### Cost (AWS us-east-1 / N. Virginia, est.)
-GPU billed at $2.50/A10-GPU-hr; CPU at $0.45/DBU (Enterprise). Region rates vary.
-
-| Pattern | Compute | ~Cost | Notes |
-|---------|---------|:-----:|-------|
-| P2 | GPU | **$0.35** | fastest *and* cheapest |
-| P1 | GPU | $0.59 | |
-| P4 | CPU | $2.35 | autoscaled workers → higher $/hr |
-| P3 | CPU | $4.29 | ~50 DBU/hr effective |
-
-**GPU wins on both speed and cost** here — the distributed-CPU patterns cost 7–12× more
-for slower results on this write-bound workload.
-
-## Running these
-
-Each script is a Databricks notebook-source `.py`. Upload to a workspace and run as a
-notebook job. Example job specs are in [`jobs/`](jobs/). Two compute profiles are used:
-
-**Serverless GPU (P1, P2)** — task-level accelerator + AI Runtime base environment:
-```json
-{
-  "tasks": [{
-    "task_key": "infer",
-    "notebook_task": {"notebook_path": "/Workspace/.../p1_coco_single_model", "source": "WORKSPACE"},
-    "environment_key": "aiv5",
-    "compute": {"hardware_accelerator": "GPU_1xA10"}
-  }],
-  "environments": [{"environment_key": "aiv5", "spec": {"base_environment": "databricks_ai_v5"}}]
-}
-```
-
-**Serverless Spark CPU with torch on executors (P3, P4)** — dependencies propagate to
-`mapInPandas` workers:
-```json
-{
-  "tasks": [{
-    "task_key": "infer",
-    "notebook_task": {"notebook_path": "/Workspace/.../p3_coco_udf_batch", "source": "WORKSPACE"},
-    "environment_key": "spk"
-  }],
-  "environments": [{"environment_key": "spk",
-                    "spec": {"client": "3", "dependencies": ["torch", "torchvision", "transformers"]}}]
-}
-```
-
-### Prerequisites & gotchas
-- **Serverless GPU jobs (P1/P2) require a Beta preview:** enable **"Serverless workspace
-  base environment support in Jobs"** (Beta) in the workspace preview settings. Without it,
-  the `environments[].spec.base_environment: databricks_ai_v5` + `compute.hardware_accelerator`
-  config is rejected / silently downgraded to a CPU environment and the GPU task fails.
-  GPU serverless also supports only `notebook_task` and `python_wheel_task` (not
-  `spark_python_task`), and `for_each` is unsupported on GPU jobs.
-- A registered UC model (the ViT "soup" model) and COCO val2017 JPEGs on a UC Volume.
-- **Output dirs under `/Volumes/{catalog}/{schema}/` must be registered UC Volumes.**
-  `os.makedirs()` on a non-Volume path fails with `OSError [Errno 95] Operation not
-  supported`. Create them first: `databricks volumes create {cat} {schema} {name} MANAGED`.
-- Catalog/schema/model names are hard-coded near the top of each script — edit for your
-  workspace.
-
-## Notes
-- Timings measured end-to-end in-script (read + inference + write); serverless startup and
-  environment install are excluded (they add ~1.5–3 min, reflected in billed run time).
-- Built and benchmarked on Databricks serverless (AWS us-east-1).
+1. Run `00_setup_register_model.py` with your `source_model` (and `deploy_endpoint=true` for P6).
+2. Run any pattern job with params: `catalog, schema, dataset, image_dir, image_glob`
+   (`*.jpg` flat vs `*/*` nested), `file_glob` (P4/P6 pathGlobFilter), `n_images`,
+   `num_partitions` / `write_workers`. GPU patterns (P1/P2/P5) need the *"Serverless workspace
+   base environment support in Jobs"* Beta; P5 also adds `ray[data]`; CPU patterns add
+   `torch/torchvision/transformers` (P3/P4) or `Pillow` (P6).
+3. Compare in the MLflow experiment; annotated images + prediction tables land under
+   `bench_out_pX/<dataset>/`.
