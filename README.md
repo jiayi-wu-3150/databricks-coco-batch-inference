@@ -51,41 +51,38 @@ apples-to-apples with the other single-run patterns (its warm best case is ~155s
 | 5 | **P4** — Auto Loader + UDF (CPU) | — | ingest 68s + infer/write | **438s** |
 | 6 | **P1** — GPU + serial writes | ~75s | write 635s (86% of wall) | **740s** |
 
-## The winner is not always the same
+## Key findings
 
-Both runs are 3,925 images, cold, single-run — so this isolates image size + file layout.
-These patterns are **reference templates and a benchmark harness**, not a one-size-fits-all
-recommendation: benchmark on *your* workload.
+1. **The winner is not always the same — benchmark on *your* workload.** Both datasets are
+   3,925 images, cold, single-run, so this isolates image size + file layout. COCO-cold
+   fastest is P5 ≈ P2; Imagenette-cold it's P2 ≈ P5; P2 *warm* (~155s) would win either but
+   is the least consistent. These are **reference templates and a benchmark harness**, not a
+   one-size-fits-all recommendation.
 
-| Pattern | Imagenette wall | COCO wall | What changed |
-|---------|:---------------:|:---------:|--------------|
-| P1 — GPU serial | 629s | 740s | smaller files → faster per-write, still slowest |
-| P2 — GPU parallel | **345s** | **358s** | ~flat; fastest tier on both (cold) |
-| P3 — Spark UDF (CPU) | 417s | 387s | +8% on tiny nested files |
-| P4 — Auto Loader (CPU) | 522s | 438s | **+19%** — nested-dir listing + many tiny files cost more at ingest |
-| P5 — Ray staged (GPU) | **350s** | **350s** | **identical — GPU-compute-bound** |
-| P6 — ai_query (endpoint) | 441s | 374s | **+18%** — `ai_query` phase 104s → 195s (more per-image round-trips) |
+   | Pattern | Imagenette wall | COCO wall | What changed |
+   |---------|:---------------:|:---------:|--------------|
+   | P1 — GPU serial | 629s | 740s | smaller files → faster per-write, still slowest |
+   | P2 — GPU parallel | **345s** | **358s** | ~flat; fastest tier on both (cold) |
+   | P3 — Spark UDF (CPU) | 417s | 387s | +8% on tiny nested files |
+   | P4 — Auto Loader (CPU) | 522s | 438s | **+19%** — nested-dir listing + many tiny files cost more at ingest |
+   | P5 — Ray staged (GPU) | **350s** | **350s** | **identical — GPU-compute-bound** |
+   | P6 — ai_query (endpoint) | 441s | 374s | **+18%** — `ai_query` phase 104s → 195s (more per-image round-trips) |
 
-**Winner flips:** COCO-cold fastest is P5 ≈ P2; Imagenette-cold it's P2 ≈ P5. P2 *warm*
-(~155s) would win either, but it's the least consistent.
-
-### Key findings
-
-1. **This workload is I/O-bound on writes, not compute.** GPU inference is only ~50–75s;
+2. **This workload is I/O-bound on writes, not compute.** GPU inference is only ~50–75s;
    P1's serial annotated-JPEG write to the UC Volume is 560–635s = ~86% of its runtime.
-2. **Parallelizing writes is the biggest single win** on a warm prefix (P2 warm ~155s), but
+3. **Parallelizing writes is the biggest single win** on a warm prefix (P2 warm ~155s), but
    the parallel write burst is exactly what trips S3 per-prefix throttling on a **cold**
    prefix (P2 cold 358s) — so P2 is the **least consistent** (2.3× cold/warm swing) while
    serial P1 is the **most consistent**.
-3. **P5 (Ray) is the most dataset-stable** — 350s on both datasets, because wall time is
+4. **P5 (Ray) is the most dataset-stable** — 350s on both datasets, because wall time is
    dominated by the single GPU inference stage, not by file size or count.
-4. **File *layout and count* matter as much as total bytes.** The patterns that lean on
+5. **File *layout and count* matter as much as total bytes.** The patterns that lean on
    directory listing / per-file endpoint calls (P4 ingest, P6 `ai_query`) are the ones that
    slow down on Imagenette's many small nested files — even though the total data is smaller.
-5. **The served model equals direct inference.** P6 (endpoint) vs P3 (direct) match 99.95%
+6. **The served model equals direct inference.** P6 (endpoint) vs P3 (direct) match 99.95%
    (2/3,925 borderline argmax flips from GPU fp16 vs CPU fp32).
 
-### What determines the best pattern
+## What determines the best pattern
 
 Image size is only one axis. The right choice depends on many factors — benchmark on
 *your* workload:
