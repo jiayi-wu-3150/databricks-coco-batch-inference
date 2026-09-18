@@ -83,18 +83,38 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
    the parallel write burst is exactly what trips S3 per-prefix throttling on a **cold**
    prefix (P2 cold 358s) — so P2 is the **least consistent** (2.3× cold/warm swing) while
    serial P1 is the **most consistent**.
-4. **P5 (Ray) is the most dataset-stable** — 350s on both datasets, because wall time is
-   dominated by the single GPU inference stage, not by file size or count.
+4. **P5 (Ray) is the most dataset-stable** — ~350s script wall on both datasets (≈441s/431s
+   billed), because time is dominated by the single GPU inference stage, not file size or count.
 5. **File *layout and count* matter as much as total bytes.** The patterns that lean on
    directory listing / per-file endpoint calls (P4 ingest, P6 `ai_query`) are the ones that
    slow down on Imagenette's many small nested files — even though the total data is smaller.
 6. **The served model equals direct inference.** P6 (endpoint) vs P3 (direct) match 99.95%
    (2/3,925 borderline argmax flips from GPU fp16 vs CPU fp32).
 
+## Cost (AWS us-east-1 / N. Virginia)
+
+Measured from `system.billing.usage × system.billing.list_prices` (Enterprise, settled
+billing) for one 3,925-image COCO run per pattern. GPU compute bills under the serverless
+**Model Training** SKU (~$0.65/DBU), CPU under **Jobs Serverless Compute** ($0.45/DBU), and
+the P6 endpoint under **Serverless Real-Time Inference** (~$0.70/DBU). Region rates vary.
+
+| Pattern | Billing SKU | DBUs / run | **~Cost / run** | Notes |
+|---------|-------------|:----------:|:---------------:|-------|
+| **P2** GPU parallel | Model Training (GPU) | 0.39 | **$0.25** | cheapest — short GPU hold |
+| **P5** Ray staged | Model Training (GPU) | ~0.30 | **~$0.20–0.30** | GPU, dataset-stable |
+| **P1** GPU serial | Model Training (GPU) | 0.61 | **$0.39** | slow serial writes → longer GPU hold |
+| **P6** ai_query | Jobs Serverless (CPU) + endpoint | 2.54 + endpoint | **~$1.14 + ~$0.25** | two compute resources (scale-to-zero limits idle endpoint cost) |
+| **P3** Spark UDF | Jobs Serverless (CPU) | 3.53 | **$1.59** | autoscaled CPU workers |
+| **P4** Auto Loader | Jobs Serverless (CPU) | 3.91 | **$1.76** | + binary-ingest stage |
+
+**GPU wins on both speed and cost** for this write-bound workload — the single-node GPU
+patterns (P1/P2/P5) run **~4–7× cheaper** than the distributed-CPU patterns (P3/P4/P6),
+because CPU inference is slower *and* fans the work across several billed workers. P2 and P5
+are both the fastest tier *and* the cheapest (~$0.25/run).
+
 ## What determines the best pattern
 
-Image size is only one axis. The right choice depends on many factors — benchmark on
-*your* workload:
+Image size is only one axis. Other factors that move the ranking on *your* workload:
 
 - **Do you write images at all?** These examples annotate + write a JPEG per image, which
   is the dominant cost. If you only need predictions to a Delta table (no image output),
@@ -115,27 +135,6 @@ Image size is only one axis. The right choice depends on many factors — benchm
     MLflow/UC auth on workers (how P3/P4 distribute).
   - **Behind a serving endpoint** — inference is governed, versioned and SQL-callable, at
     the cost of a base64 round-trip and a second compute resource (P6).
-
-### Cost (AWS us-east-1 / N. Virginia)
-
-Measured from `system.billing.usage × system.billing.list_prices` (Enterprise, settled
-billing) for one 3,925-image COCO run per pattern. GPU compute bills under the serverless
-**Model Training** SKU (~$0.65/DBU), CPU under **Jobs Serverless Compute** ($0.45/DBU), and
-the P6 endpoint under **Serverless Real-Time Inference** (~$0.70/DBU). Region rates vary.
-
-| Pattern | Billing SKU | DBUs / run | **~Cost / run** | Notes |
-|---------|-------------|:----------:|:---------------:|-------|
-| **P2** GPU parallel | Model Training (GPU) | 0.39 | **$0.25** | cheapest — short GPU hold |
-| **P5** Ray staged | Model Training (GPU) | ~0.30 | **~$0.20–0.30** | GPU, dataset-stable |
-| **P1** GPU serial | Model Training (GPU) | 0.61 | **$0.39** | slow serial writes → longer GPU hold |
-| **P6** ai_query | Jobs Serverless (CPU) + endpoint | 2.54 + endpoint | **~$1.14 + ~$0.25** | two compute resources (scale-to-zero limits idle endpoint cost) |
-| **P3** Spark UDF | Jobs Serverless (CPU) | 3.53 | **$1.59** | autoscaled CPU workers |
-| **P4** Auto Loader | Jobs Serverless (CPU) | 3.91 | **$1.76** | + binary-ingest stage |
-
-**GPU wins on both speed and cost** for this write-bound workload — the single-node GPU
-patterns (P1/P2/P5) run **~4–7× cheaper** than the distributed-CPU patterns (P3/P4/P6),
-because CPU inference is slower *and* fans the work across several billed workers. P2 and P5
-are both the fastest tier *and* the cheapest (~$0.25/run).
 
 ## Running these
 
@@ -175,13 +174,16 @@ Three compute profiles are used (all captured in the per-pattern `job.json`):
   the string). `ai_query` auto-retries 429s — validate on output completeness + correctness,
   not 429 count.
 
-## Notes
+## Methodology & caveats
 
-- Timings are measured end-to-end in-script (read + inference + write); serverless startup
-  and environment install are excluded — they add a fixed ~70–110s, reflected in the billed
-  run time. Compare *patterns* with script wall; plan *cost/wall-clock* with billed.
-- **Write-bound patterns (P1–P4, P6) are cold/warm sensitive.** Writing thousands of
-  annotated JPEGs to a UC Volume is object-store (S3) I/O: a fresh prefix throttles
-  (`503 SlowDown` → retries), a warmed one flies. All numbers here are **cold single runs**
-  for a consistent methodology.
+- **Cold single runs.** All numbers are single cold runs for a consistent methodology.
+  Write-bound patterns (P1–P4, P6) are **cold/warm sensitive**: writing thousands of
+  annotated JPEGs to a UC Volume is object-store (S3) I/O, so a fresh prefix throttles
+  (`503 SlowDown` → retries) while a warmed one flies (P2: 288s cold → 66s warm write).
+- **Script wall vs. billed job time.** Script wall is the in-script timer (read + inference +
+  write); billed job time adds a fixed ~70–110s of serverless startup + env install, which
+  varies run-to-run with how warm the serverless pool is.
+- **Queue time is elapsed but *not* billed.** When several jobs contend for capacity, a run
+  can wait in a queue before compute is allocated — that shows up in raw run duration but
+  isn't charged (see the P1 Imagenette footnote: 1,622s elapsed, ~740s compute).
 - Built and benchmarked on Databricks serverless (AWS us-east-1).
