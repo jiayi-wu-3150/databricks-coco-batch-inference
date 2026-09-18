@@ -11,9 +11,10 @@ images and re-run** with no code edits. Each pattern lives in its own folder wit
 notebook `.py`, a `job.json` you can `databricks jobs create` from, and an
 `architecture.md` diagram.
 
-- **Model:** `…cv.bench_vit@prod` (transformers) — batch patterns load
-  `models:/…bench_vit@prod`. `…cv.bench_vit_serving@prod` (pyfunc, base64→`{label,score}`)
-  backs the P6 endpoint. Labels auto-derive from the model's `id2label`.
+- **Model:** a **ViT-Base/16-224** image classifier (~86M params, 346 MB; a 10-checkpoint
+  weight "soup" — [details](#the-model)). Registered as `…cv.bench_vit@prod` (transformers) —
+  batch patterns load `models:/…bench_vit@prod`; `…cv.bench_vit_serving@prod` (pyfunc,
+  base64→`{label,score}`) backs the P6 endpoint. Labels auto-derive from `id2label`.
 - **Datasets:** benchmarked on **COCO val2017** (avg **≈159.5 KB**/image, range 8.7–680 KB)
   and **Imagenette val** (avg **≈7.8 KB**/image, range 1.8–22.2 KB) — **~20× smaller** — both
   the first **3,925 images**, so the only variables are image size + file layout. (Model is
