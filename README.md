@@ -23,6 +23,21 @@ notebook `.py`, a `job.json` you can `databricks jobs create` from, and an
   registers both models, creates the output volumes, and (optionally) deploys the GPU
   serving endpoint for P6.
 
+## The model
+
+All six patterns run the **same** classifier so timings are comparable:
+
+- **Architecture:** ViT-Base/16-224 (`ViTForImageClassification`) — 224×224 input, 16×16
+  patches, hidden 768, 12 layers, 12 heads. **~86M parameters, 346 MB** on disk (fp32
+  `safetensors`).
+- **Task:** 10-class **Imagenette** classifier; labels auto-derived from `id2label` (so
+  swapping in any HF classifier just works).
+- **Assembly — a weight-averaged "model soup".** 10 independently fine-tuned checkpoints
+  (`checkpoint-01…10`) averaged into **one** weight set. This is *not* a runtime ensemble:
+  it stays a single model (**one load, one forward pass**), so per-image inference costs the
+  same as a plain ViT-Base — not N× for N checkpoints. (A *logit ensemble* would be N loads +
+  N passes; see [What determines the best pattern](#what-determines-the-best-pattern).)
+
 ## The six patterns
 
 | Dir | Pattern | Compute | I/O strategy |
