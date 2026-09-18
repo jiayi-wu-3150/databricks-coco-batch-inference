@@ -14,9 +14,11 @@ notebook `.py`, a `job.json` you can `databricks jobs create` from, and an
 - **Model:** `…cv.bench_vit@prod` (transformers) — batch patterns load
   `models:/…bench_vit@prod`. `…cv.bench_vit_serving@prod` (pyfunc, base64→`{label,score}`)
   backs the P6 endpoint. Labels auto-derive from the model's `id2label`.
-- **Datasets:** benchmarked on **COCO val2017** and **Imagenette val**, both first **3,925
-  images** so the only variables are image size + file layout. (Model is Imagenette-trained,
-  so on COCO the labels are meaningless — **these measure timing/throughput, not accuracy.**)
+- **Datasets:** benchmarked on **COCO val2017** (avg **≈159.5 KB**/image, range 8.7–680 KB)
+  and **Imagenette val** (avg **≈7.8 KB**/image, range 1.8–22.2 KB) — **~20× smaller** — both
+  the first **3,925 images**, so the only variables are image size + file layout. (Model is
+  Imagenette-trained, so on COCO the labels are meaningless — **these measure
+  timing/throughput, not accuracy.**)
 - **Setup:** run [`00_setup_register_model.py`](00_setup_register_model.py) once — it
   registers both models, creates the output volumes, and (optionally) deploys the GPU
   serving endpoint for P6.
@@ -49,7 +51,7 @@ apples-to-apples with the other single-run patterns (its warm best case is ~155s
 | 5 | **P4** — Auto Loader + UDF (CPU) | — | ingest 68s + infer/write | **438s** |
 | 6 | **P1** — GPU + serial writes | ~75s | write 635s (86% of wall) | **740s** |
 
-## Results — Imagenette val (3,925 imgs, small nested JPEGs)
+## Results — Imagenette val (3,925 imgs, ≈7.8 KB avg, small nested JPEGs)
 
 | Rank | Pattern | Write / pipeline phase | **Total wall** |
 |:----:|---------|:----------------------:|:--------------:|
