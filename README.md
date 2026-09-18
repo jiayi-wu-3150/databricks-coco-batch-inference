@@ -95,8 +95,8 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
 
 Measured from `system.billing.usage × system.billing.list_prices` (Enterprise, settled
 billing) for one 3,925-image COCO run per pattern. GPU compute bills under the serverless
-**Model Training** SKU (~$0.65/DBU), CPU under **Jobs Serverless Compute** ($0.45/DBU), and
-the P6 endpoint under **Serverless Real-Time Inference** (~$0.70/DBU). Region rates vary.
+**Model Training** SKU ($0.65/DBU), CPU under **Jobs Serverless Compute** ($0.45/DBU), and
+the P6 endpoint under **Serverless Real-Time Inference** ($0.07/DBU). Region rates vary.
 
 | Pattern | Billing SKU | DBUs / run | **Cost / run** | Notes |
 |---------|-------------|:----------:|:--------------:|-------|
