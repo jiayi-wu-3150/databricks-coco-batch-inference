@@ -93,7 +93,8 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
 6. **The served model equals direct inference.** P6 (endpoint) vs P3 (direct) match 99.95%
    (2/3,925 borderline argmax flips from GPU fp16 vs CPU fp32).
 
-## Cost (AWS us-east-1 / N. Virginia)
+<details>
+<summary><b>Cost (AWS us-east-1 / N. Virginia)</b> — click to expand</summary>
 
 Measured from `system.billing.usage × system.billing.list_prices` (Enterprise, settled
 billing) for one 3,925-image COCO run per pattern. GPU compute bills under the serverless
@@ -113,6 +114,8 @@ the P6 endpoint under **Serverless Real-Time Inference** ($0.07/DBU). Region rat
 patterns (P1/P2/P5) run **~4–7× cheaper** than the distributed-CPU patterns (P3/P4/P6),
 because CPU inference is slower *and* fans the work across several billed workers. P2 and P5
 are both the fastest tier *and* the cheapest (~$0.25/run).
+
+</details>
 
 ## What determines the best pattern
 
