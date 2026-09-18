@@ -24,3 +24,6 @@ warm the target prefix if you can.
 
 **Timing (3,925 imgs, cold, script wall):** COCO **358s** (155s warm) · Imagenette **345s**
 (inference ~34–50s · **write 283–288s cold** / 66s warm).
+
+**Cost (us-east-1, settled billing):** **~$0.25/run** — 0.39 DBU on the serverless GPU
+Model Training SKU. Cheapest pattern (short GPU hold).

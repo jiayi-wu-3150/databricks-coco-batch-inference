@@ -25,3 +25,6 @@ cleanly to multi-GPU. Because wall time is dominated by the GPU inference stage,
 
 **Timing (3,925 imgs, cold, script wall):** COCO **350s** · Imagenette **350s**
 (identical — GPU-compute-bound).
+
+**Cost (us-east-1, settled billing):** **~$0.20–0.30/run** — ~0.3 DBU on the serverless GPU
+Model Training SKU. Fastest tier *and* among the cheapest.

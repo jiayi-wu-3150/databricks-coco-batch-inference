@@ -22,3 +22,6 @@ pass, one write loop. Everything is on the driver GPU node.
 
 **Timing (3,925 imgs, cold, script wall):** COCO **740s** · Imagenette **629s**
 (model_read ~25s · inference ~43–75s · **write 560–635s**).
+
+**Cost (us-east-1, settled billing):** **~$0.39/run** — 0.61 DBU on the serverless GPU
+Model Training SKU (longer than P2 because serial writes hold the GPU longer).

@@ -23,3 +23,6 @@ binary table.
 
 **Timing (3,925 imgs, cold, script wall):** COCO **438s** (ingest 68s) · Imagenette
 **522s** (ingest 97s).
+
+**Cost (us-east-1, settled billing):** **~$1.76/run** — 3.91 DBU on Jobs Serverless Compute
+($0.45/DBU). Highest of the six: P3's CPU inference cost plus the extra binary-ingest stage.

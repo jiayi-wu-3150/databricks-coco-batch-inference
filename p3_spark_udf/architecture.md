@@ -25,3 +25,7 @@ swings ±25% with how many workers spin up. Best when you have no GPU or want pu
 horizontal scale.
 
 **Timing (3,925 imgs, cold, script wall):** COCO **387s** · Imagenette **417s**.
+
+**Cost (us-east-1, settled billing):** **~$1.59/run** — 3.53 DBU on Jobs Serverless Compute
+($0.45/DBU). ~4× a GPU pattern: CPU inference is slower and fans across several billed
+workers.

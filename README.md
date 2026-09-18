@@ -119,22 +119,26 @@ Image size is only one axis. The right choice depends on many factors — benchm
   - **Behind a serving endpoint** — inference is governed, versioned and SQL-callable, at
     the cost of a base64 round-trip and a second compute resource (P6).
 
-### Cost (AWS us-east-1 / N. Virginia, est.)
+### Cost (AWS us-east-1 / N. Virginia)
 
-GPU billed at $2.50/A10-GPU-hr; CPU Jobs Serverless at $0.45/DBU (Enterprise). Region rates
-vary. GPU dollar figures below are from billed run time; distributed-CPU costs scale with
-autoscaled worker count (several DBU/hr) and run longer, so they land several × higher.
+Measured from `system.billing.usage × system.billing.list_prices` (Enterprise, settled
+billing) for one 3,925-image COCO run per pattern. GPU compute bills under the serverless
+**Model Training** SKU (~$0.65/DBU), CPU under **Jobs Serverless Compute** ($0.45/DBU), and
+the P6 endpoint under **Serverless Real-Time Inference** (~$0.70/DBU). Region rates vary.
 
-| Pattern | Compute | ~Cost | Notes |
-|---------|---------|:-----:|-------|
-| P5 | GPU | **~$0.31** | fastest, and dataset-stable |
-| P2 | GPU | **~$0.32** | cheapest tier (short GPU run) |
-| P1 | GPU | ~$0.59 | slow serial writes → longer GPU hold |
-| P3 / P4 | CPU | several × higher | autoscaled CPU workers, longer wall |
-| P6 | CPU + GPU endpoint | CPU job + endpoint | scale-to-zero limits idle endpoint cost |
+| Pattern | Billing SKU | DBUs / run | **~Cost / run** | Notes |
+|---------|-------------|:----------:|:---------------:|-------|
+| **P2** GPU parallel | Model Training (GPU) | 0.39 | **$0.25** | cheapest — short GPU hold |
+| **P5** Ray staged | Model Training (GPU) | ~0.30 | **~$0.20–0.30** | GPU, dataset-stable |
+| **P1** GPU serial | Model Training (GPU) | 0.61 | **$0.39** | slow serial writes → longer GPU hold |
+| **P6** ai_query | Jobs Serverless (CPU) + endpoint | 2.54 + endpoint | **~$1.14 + ~$0.25** | two compute resources (scale-to-zero limits idle endpoint cost) |
+| **P3** Spark UDF | Jobs Serverless (CPU) | 3.53 | **$1.59** | autoscaled CPU workers |
+| **P4** Auto Loader | Jobs Serverless (CPU) | 3.91 | **$1.76** | + binary-ingest stage |
 
-**GPU wins on both speed and cost** for this write-bound workload; the distributed-CPU
-patterns cost multiples more for slower results.
+**GPU wins on both speed and cost** for this write-bound workload — the single-node GPU
+patterns (P1/P2/P5) run **~4–7× cheaper** than the distributed-CPU patterns (P3/P4/P6),
+because CPU inference is slower *and* fans the work across several billed workers. P2 and P5
+are both the fastest tier *and* the cheapest (~$0.25/run).
 
 ## Running these
 

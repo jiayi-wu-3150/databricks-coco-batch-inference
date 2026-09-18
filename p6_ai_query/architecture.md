@@ -35,3 +35,7 @@ job. The `ai_query` phase is sensitive to per-image round-trips — it nearly do
 argmax flips from GPU fp16 vs CPU fp32).
 
 **Timing (3,925 imgs, cold, script wall):** COCO **374s** · Imagenette **441s**.
+
+**Cost (us-east-1, settled billing):** **~$1.4/run** — ~$1.14 CPU caller (2.54 DBU on Jobs
+Serverless) + ~$0.25 GPU endpoint (Serverless Real-Time Inference). Two compute resources at
+once; scale-to-zero limits idle endpoint cost between runs.
