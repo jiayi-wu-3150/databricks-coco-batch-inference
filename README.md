@@ -1,16 +1,17 @@
-# Databricks COCO Batch Inference — Pattern Comparison (P1–P4)
+# Databricks COCO Batch Inference — Pattern Comparison (P1–P7)
 
-Four batch-inference patterns for running a ViT image classifier over **COCO val2017**
+Six batch-inference patterns for running a ViT image classifier over **COCO val2017**
 images on **Databricks serverless compute**, benchmarked head-to-head. The goal is to
-compare *compute strategies* (single-node GPU vs. distributed CPU) and *I/O strategies*
-(serial vs. parallel vs. distributed writes) on the same workload.
+compare *compute strategies* (single-node GPU, distributed CPU, Ray, model-serving) and
+*I/O strategies* (serial vs. parallel vs. distributed writes) on the same workload.
 
-All four run the same weight-averaged "soup" ViT model over the first **3,925 COCO
+All patterns run the same weight-averaged "soup" ViT model over the first **3,925 COCO
 val2017 images** (~159 KB avg — ~20× larger than Imagenette) and write annotated JPEGs
 back to a Unity Catalog Volume. Since the model is Imagenette-trained, labels are not
 meaningful on COCO — **these experiments measure timing/throughput, not accuracy.**
+(P5 = the "P1-on-COCO" baseline itself, so it isn't a separate entry here.)
 
-## The four patterns
+## The patterns
 
 | Dir | Pattern | Compute | I/O strategy |
 |-----|---------|---------|--------------|
@@ -18,15 +19,19 @@ meaningful on COCO — **these experiments measure timing/throughput, not accura
 | [`p2_soup_parallel_io/`](p2_soup_parallel_io/inference_p2_coco.py) | Single soup model, one forward pass | Serverless GPU (1×A10) | **32-thread** parallel writes |
 | [`p3_udf_batch/`](p3_udf_batch/inference_p3_coco.py) | `mapInPandas` Spark UDF | Serverless Spark (CPU, 128 partitions) | **Distributed** writes across executors |
 | [`p4_autoloader_binary/`](p4_autoloader_binary/inference_p4_coco.py) | Auto Loader → binary Delta table → UDF | Serverless Spark (CPU, 128 partitions) | Distributed ingest + writes |
+| [`p6_ai_query/`](p6_ai_query/) | `ai_query` → **GPU model-serving endpoint** (inference-only) | GPU endpoint + CPU caller | CPU does base64 + `ai_query` + distributed writes |
+| [`p7_ray_staged/`](p7_ray_staged/) | **Ray Data** 3-stage: CPU decode → GPU infer → CPU write | Serverless GPU (Ray, 1×A10) | Distributed CPU write actors (off the GPU) |
 
-## Results (3,925 COCO images)
+## Results (3,925 COCO images, all write-inclusive)
 
-| Rank | Pattern | Inference | Write phase | **Total wall** | Throughput |
-|:----:|---------|:---------:|:-----------:|:--------------:|:----------:|
-| 🥇 1 | **P2** — GPU + 32-thread writes | 78.0s | 303.4s | **402s** | 9.8 img/s |
-| 🥈 2 | **P3** — Spark UDF (CPU) | — | *(distributed)* | **507s** | 7.75 img/s |
-| 🥉 3 | **P4** — Auto Loader + UDF (CPU) | 467s | + 122s ingest (5,000 imgs) | **591s** | 6.65 img/s |
-| 4 | **P1** — GPU + serial writes | 78.6s | 546.1s (74% of wall) | **741s** | 5.3 img/s |
+| Rank | Pattern | Compute | **Total wall** | Notes |
+|:----:|---------|---------|:--------------:|-------|
+| 🥇 1 | **P6** — `ai_query` → GPU endpoint + CPU write | GPU endpoint + CPU | **255s** | inference offloaded to endpoint; 100% match, 0 failures |
+| 🥈 2 | **P7** — Ray Data 3-stage | Serverless GPU | **345s** | staged CPU→GPU→CPU-write; fixes v1 (was 3,804s) |
+| 🥉 3 | **P2** — GPU + 32-thread writes | Serverless GPU | **402s** | write 303s |
+| 4 | **P3** — Spark UDF (CPU) | Serverless CPU | **507s** | distributed |
+| 5 | **P4** — Auto Loader + UDF (CPU) | Serverless CPU | **591s** | + ingest |
+| 6 | **P1** — GPU + serial writes | Serverless GPU | **741s** | write 546s = 74% |
 
 ### Key findings
 1. **This workload is I/O-bound on writes, not compute.** GPU inference is only ~78s;
@@ -81,6 +86,45 @@ Image size is only one axis. The right choice depends on many factors — benchm
   - **Loaded from an MLflow experiment run** — convenient during dev, but run-artifact
     reads can be the slowest load path (the original backend comparison saw MLflow model
     read dominate).
+
+## P6 — `ai_query` against a GPU model-serving endpoint
+
+Batch inference by calling a **model-serving endpoint** from SQL with `ai_query`. Split of
+labor: the **GPU endpoint does inference only** (base64 image in → `{label, score}` out),
+and **serverless CPU** does everything else — read raw JPEGs → base64 table, `ai_query`,
+then distributed annotate + write. End-to-end (255s) = base64 54s · `ai_query` 103s
+(38 img/s) · annotate+write 97s.
+
+- **Deployment shape is what matters, not GPU vs CPU.** A raw `mlflow.transformers` model
+  served directly fails to load. The fix is a custom `pyfunc` wrapper with a real
+  `ModelSignature` (`image` string in → `label,score` out). See
+  [`deploy_vit_aiquery.py`](p6_ai_query/deploy_vit_aiquery.py).
+- **`workload_type` gotcha:** the SDK's `ServedEntityInput.workload_type` wants the
+  **`ServingModelWorkloadType.GPU_SMALL` enum**, not the string `"GPU_SMALL"` (the REST
+  API accepts the string, the Python SDK does not → `AttributeError: 'str' … 'value'`).
+- **Inference-only endpoint = writes are decoupled.** Annotated images are written by the
+  CPU caller *after* `ai_query`, so a 429 can never produce a half/bad image. `ai_query`
+  auto-retries throttling; with default `failOnError=true` a request is either retried to a
+  200 (image written normally) or the whole query fails (nothing written). Validate on the
+  **output** (completeness + correctness), not the 429 count — retried 429s are invisible.
+- **Correctness:** predictions matched the direct-inference pattern (P3) **100%** across all
+  3,925 rows. Concurrency left at the endpoint default (`workload_size=Small`).
+
+## P7 — Ray Data staged pipeline
+
+**Ray Data** on serverless GPU, following the Databricks industry-solutions reference:
+three stages — `.map` CPU decode (autoscaled) → `.map_batches` GPU inference
+(`num_gpus=1`, model loaded once) → `.map` CPU annotate+write. Writes stay **off** the GPU
+actor. See [`inference_p7_ray_staged.py`](p7_ray_staged/inference_p7_ray_staged.py); launch
+via the `air` CLI ([`train_p7_ray_v2.yaml`](p7_ray_staged/train_p7_ray_v2.yaml)) or as a
+Jobs-API GPU notebook task (same config as P1/P2 + `ray[data]`).
+
+> ⚠️ **Anti-pattern (kept as [`ray_v1_broken_reference.py`](p7_ray_staged/ray_v1_broken_reference.py)):**
+> the first version did decode **and** a per-image FUSE write **inside a single GPU actor**
+> (`concurrency=1`). The GPU sat at **0% utilization** and it took **3,804s** (1.04 img/s)
+> on 3,925 images. Separating CPU decode/write into their own autoscaled Ray stages (and
+> keeping the GPU actor pure inference) took it to **345s** with real GPU usage — a ~11×
+> speedup, and the fastest write-inclusive GPU-native pattern here.
 
 ### Cost (AWS us-east-1 / N. Virginia, est.)
 GPU billed at $2.50/A10-GPU-hr; CPU at $0.45/DBU (Enterprise). Region rates vary.
