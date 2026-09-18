@@ -42,14 +42,18 @@ and its job spec ([`p1_gpu_serial/job.json`](p1_gpu_serial/job.json)).
 Cold single runs, script wall. **P2 is reported at its cold number** so the comparison is
 apples-to-apples with the other single-run patterns (its warm best case is ~155s).
 
-| Rank | Pattern | Inference | Write / pipeline phase | **Total wall** |
-|:----:|---------|:---------:|:----------------------:|:--------------:|
-| 1 | **P5** — Ray staged (GPU) | *(in pipeline)* | pipeline 308s | **350s** |
-| 2 | **P2** — GPU + 32-thread writes | ~50s | write 288s (cold) | **358s** |
-| 3 | **P6** — ai_query → GPU endpoint | ai_query 104s | base64 55s + write 214s | **374s** |
-| 4 | **P3** — Spark UDF (CPU) | — | *(distributed)* | **387s** |
-| 5 | **P4** — Auto Loader + UDF (CPU) | — | ingest 68s + infer/write | **438s** |
-| 6 | **P1** — GPU + serial writes | ~75s | write 635s (86% of wall) | **740s** |
+"Script wall" = end-to-end in-script (read + inference + write). "Billed job time" adds the
+fixed serverless startup + environment install (~70–110s) that's on the invoice but not in
+the script timer — compare *patterns* with script wall, plan *cost/wall-clock* with billed.
+
+| Rank | Pattern | Time breakdown | **Script wall** | **Billed job time** |
+|:----:|---------|----------------|:---------------:|:-------------------:|
+| 1 | **P5** — Ray staged (GPU) | pipeline 308s | **350s** | ~441s |
+| 2 | **P2** — GPU + 32-thread writes | inference ~50s · write 288s (cold) | **358s** | ~460s |
+| 3 | **P6** — ai_query → GPU endpoint | ai_query 104s · base64 55s · write 214s | **374s** | ~405s |
+| 4 | **P3** — Spark UDF (CPU) | *(distributed read+infer+write)* | **387s** | ~457s |
+| 5 | **P4** — Auto Loader + UDF (CPU) | ingest 68s · infer/write | **438s** | ~513s |
+| 6 | **P1** — GPU + serial writes | inference ~75s · write 635s (86% of wall) | **740s** | ~848s |
 
 ## Key findings
 
