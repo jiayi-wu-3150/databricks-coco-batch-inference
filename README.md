@@ -51,17 +51,6 @@ apples-to-apples with the other single-run patterns (its warm best case is ~155s
 | 5 | **P4** — Auto Loader + UDF (CPU) | — | ingest 68s + infer/write | **438s** |
 | 6 | **P1** — GPU + serial writes | ~75s | write 635s (86% of wall) | **740s** |
 
-## Results — Imagenette val (3,925 imgs, ≈7.8 KB avg, small nested JPEGs)
-
-| Rank | Pattern | Write / pipeline phase | **Total wall** |
-|:----:|---------|:----------------------:|:--------------:|
-| 1 | **P2** — GPU + 32-thread writes | write 283s | **345s** |
-| 2 | **P5** — Ray staged (GPU) | pipeline 299s | **350s** |
-| 3 | **P3** — Spark UDF (CPU) | *(distributed)* | **417s** |
-| 4 | **P6** — ai_query → GPU endpoint | ai_query 195s + write 206s | **441s** |
-| 5 | **P4** — Auto Loader + UDF (CPU) | ingest 97s + infer/write | **522s** |
-| 6 | **P1** — GPU + serial writes | write 560s | **629s** |
-
 ## The winner is not always the same
 
 Both runs are 3,925 images, cold, single-run — so this isolates image size + file layout.
