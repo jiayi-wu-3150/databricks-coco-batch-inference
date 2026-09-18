@@ -49,7 +49,7 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
 | Rank | Pattern | Time breakdown | **Script wall** | **Billed job time** |
 |:----:|---------|----------------|:---------------:|:-------------------:|
 | 1 | **P5** — Ray staged (GPU) | pipeline 308s | **350s** | ~441s |
-| 2 | **P2** — GPU + 32-thread writes | inference ~50s · write 288s (cold) | **358s** | ~460s |
+| 2 | **P2** — GPU + 32-thread writes | inference ~50s · write 288s (cold) | **358s** | ~447s |
 | 3 | **P6** — ai_query → GPU endpoint | ai_query 104s · base64 55s · write 214s | **374s** | ~405s |
 | 4 | **P3** — Spark UDF (CPU) | *(distributed read+infer+write)* | **387s** | ~457s |
 | 5 | **P4** — Auto Loader + UDF (CPU) | ingest 68s · infer/write | **438s** | ~513s |
@@ -58,19 +58,24 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
 ## Key findings
 
 1. **The winner is not always the same — benchmark on *your* workload.** Both datasets are
-   3,925 images, cold, single-run, so this isolates image size + file layout. COCO-cold
-   fastest is P5 ≈ P2; Imagenette-cold it's P2 ≈ P5; P2 *warm* (~155s) would win either but
-   is the least consistent. These are **reference templates and a benchmark harness**, not a
-   one-size-fits-all recommendation.
+   3,925 images, cold, single-run, so this isolates image size + file layout. The fast tier
+   (P2/P5/P6) lands within ~40s on both, but the exact winner shuffles: by **billed job
+   time** P6 is quickest on COCO (405s — it has the lightest startup) and P5 on Imagenette
+   (431s). P2 *warm* (~155s wall) would beat either, but it's the least consistent. These are
+   **reference templates and a benchmark harness**, not a one-size-fits-all recommendation.
 
-   | Pattern | Imagenette wall | COCO wall | What changed |
-   |---------|:---------------:|:---------:|--------------|
-   | P1 — GPU serial | 629s | 740s | smaller files → faster per-write, still slowest |
-   | P2 — GPU parallel | **345s** | **358s** | ~flat; fastest tier on both (cold) |
-   | P3 — Spark UDF (CPU) | 417s | 387s | +8% on tiny nested files |
-   | P4 — Auto Loader (CPU) | 522s | 438s | **+19%** — nested-dir listing + many tiny files cost more at ingest |
-   | P5 — Ray staged (GPU) | **350s** | **350s** | **identical — GPU-compute-bound** |
-   | P6 — ai_query (endpoint) | 441s | 374s | **+18%** — `ai_query` phase 104s → 195s (more per-image round-trips) |
+   | Pattern | Imagenette job time | COCO job time | What changed |
+   |---------|:-------------------:|:-------------:|--------------|
+   | P1 — GPU serial | ~740s&nbsp;† | 848s | smaller files → less write time, still slowest |
+   | P2 — GPU parallel | **441s** | **447s** | ~flat; fastest tier on both (cold) |
+   | P3 — Spark UDF (CPU) | 486s | 457s | +6% on tiny nested files |
+   | P4 — Auto Loader (CPU) | 593s | 513s | **+16%** — nested-dir listing + many tiny files cost more at ingest |
+   | P5 — Ray staged (GPU) | **431s** | **441s** | ~flat — GPU-compute-bound |
+   | P6 — ai_query (endpoint) | 471s | 405s | **+16%** — `ai_query` phase grows on smaller files (104s → 195s) |
+
+   † P1's Imagenette run clocked **1,622s** elapsed, but that includes a ~15-min queue wait
+   (six GPU jobs launched at once); queue time isn't billed — its compute was ~740s (629s
+   script wall + startup).
 
 2. **This workload is I/O-bound on writes, not compute.** GPU inference is only ~50–75s;
    P1's serial annotated-JPEG write to the UC Volume is 560–635s = ~86% of its runtime.
