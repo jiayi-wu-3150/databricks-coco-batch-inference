@@ -53,8 +53,34 @@ meaningful on COCO — **these experiments measure timing/throughput, not accura
 > | P4 — CPU autoloader | 711s | 591s |
 >
 > **Winner flips: P3 on Imagenette, P2 on COCO.** These four scripts are provided as
-> **reference templates and a benchmark harness** — pick the pattern that fits *your* image
-> size and I/O profile rather than assuming one always wins.
+> **reference templates and a benchmark harness**, not a one-size-fits-all recommendation.
+
+### What determines the best pattern
+
+Image size is only one axis. The right choice depends on many factors — benchmark on
+*your* workload:
+
+- **Do you write images at all?** These examples annotate + write a JPEG per image, which
+  is the dominant cost. If you only need predictions to a Delta table (no image output),
+  the write bottleneck disappears and GPU inference dominates — a completely different
+  ranking.
+- **Image size & count** — large files favor parallel-GPU writes (P2); many tiny files
+  favor distributed writes (P3/P4) and punish thread-pool writes (FUSE contention).
+- **Parallelism knobs** — P2's `WRITE_WORKERS` (thread count) and P3/P4's `NUM_PARTITIONS`
+  are tunable and materially change results; the values here are starting points.
+- **Ensemble orchestration** — a single weight-averaged *soup* model = one load + one
+  forward pass (what these scripts use). A *logit ensemble* over N checkpoints = N loads +
+  N passes, which shifts the balance heavily toward `model_read`/inference cost.
+- **Where the model lives / how it loads** — each path has different load cost and
+  executor-distribution implications:
+  - **Registered in UC** (`models:/<catalog>.<schema>.<model>/<version>`) — clean
+    versioning; each executor needs UC auth to pull, so these scripts materialize it to a
+    Volume once on the driver.
+  - **Artifacts on a UC Volume** — executors load with plain `from_pretrained(volume_path)`,
+    no MLflow/auth on workers (how P3/P4 distribute).
+  - **Loaded from an MLflow experiment run** — convenient during dev, but run-artifact
+    reads can be the slowest load path (the original backend comparison saw MLflow model
+    read dominate).
 
 ### Cost (AWS us-east-1 / N. Virginia, est.)
 GPU billed at $2.50/A10-GPU-hr; CPU at $0.45/DBU (Enterprise). Region rates vary.
