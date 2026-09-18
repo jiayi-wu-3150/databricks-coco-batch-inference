@@ -1,0 +1,10 @@
+{
+  "name": "P4 COCO - Autoloader Binary (Serverless Spark CPU)",
+  "tasks": [{
+    "task_key": "infer",
+    "notebook_task": {"notebook_path": "/Users/jiayi.wu@databricks.com/p4_coco_autoloader_binary", "source": "WORKSPACE"},
+    "environment_key": "spk"
+  }],
+  "environments": [{"environment_key": "spk", "spec": {"client": "3", "dependencies": ["torch", "torchvision", "transformers"]}}],
+  "queue": {"enabled": true}
+}
