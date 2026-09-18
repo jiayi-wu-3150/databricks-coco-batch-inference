@@ -89,6 +89,12 @@ notebook job. Example job specs are in [`jobs/`](jobs/). Two compute profiles ar
 ```
 
 ### Prerequisites & gotchas
+- **Serverless GPU jobs (P1/P2) require a Beta preview:** enable **"Serverless workspace
+  base environment support in Jobs"** (Beta) in the workspace preview settings. Without it,
+  the `environments[].spec.base_environment: databricks_ai_v5` + `compute.hardware_accelerator`
+  config is rejected / silently downgraded to a CPU environment and the GPU task fails.
+  GPU serverless also supports only `notebook_task` and `python_wheel_task` (not
+  `spark_python_task`), and `for_each` is unsupported on GPU jobs.
 - A registered UC model (the ViT "soup" model) and COCO val2017 JPEGs on a UC Volume.
 - **Output dirs under `/Volumes/{catalog}/{schema}/` must be registered UC Volumes.**
   `os.makedirs()` on a non-Volume path fails with `OSError [Errno 95] Operation not
