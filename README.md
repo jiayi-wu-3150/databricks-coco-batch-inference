@@ -98,8 +98,8 @@ billing) for one 3,925-image COCO run per pattern. GPU compute bills under the s
 **Model Training** SKU (~$0.65/DBU), CPU under **Jobs Serverless Compute** ($0.45/DBU), and
 the P6 endpoint under **Serverless Real-Time Inference** (~$0.70/DBU). Region rates vary.
 
-| Pattern | Billing SKU | DBUs / run | **~Cost / run** | Notes |
-|---------|-------------|:----------:|:---------------:|-------|
+| Pattern | Billing SKU | DBUs / run | **Cost / run** | Notes |
+|---------|-------------|:----------:|:--------------:|-------|
 | **P2** GPU parallel | Model Training (GPU) | 0.39 | **$0.25** | cheapest — short GPU hold |
 | **P5** Ray staged | Model Training (GPU) | ~0.30 | **~$0.20–0.30** | GPU, dataset-stable |
 | **P1** GPU serial | Model Training (GPU) | 0.61 | **$0.39** | slow serial writes → longer GPU hold |
