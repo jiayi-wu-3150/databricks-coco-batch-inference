@@ -39,9 +39,22 @@ meaningful on COCO — **these experiments measure timing/throughput, not accura
    Imagenette baseline despite COCO files being ~20× larger — the cost is FUSE metadata
    round-trips per file.
 
-> ⚠️ On *tiny* images (Imagenette), P2's 32-thread writes instead **backfire** (severe
-> FUSE metadata contention from many concurrent small-file creates). Parallel writes help
-> large files but hurt many tiny ones.
+> ⚠️ **The winner is not always the same — it depends on image size.** On *tiny* images
+> (Imagenette, ~7.8 KB), P2's 32-thread writes **backfire** (severe FUSE metadata
+> contention from many concurrent small-file creates) and the distributed-CPU P3 wins
+> instead. On *large* images (COCO, ~159 KB), parallel-GPU writes (P2) win. Same 3,925
+> images both times:
+>
+> | Pattern | Imagenette wall | COCO wall |
+> |---------|:---------------:|:---------:|
+> | P1 — GPU serial | 633s | 741s |
+> | P2 — GPU parallel | 1,872s ⚠️ | **402s** 🥇 |
+> | P3 — CPU UDF | **431s** 🥇 | 507s |
+> | P4 — CPU autoloader | 711s | 591s |
+>
+> **Winner flips: P3 on Imagenette, P2 on COCO.** These four scripts are provided as
+> **reference templates and a benchmark harness** — pick the pattern that fits *your* image
+> size and I/O profile rather than assuming one always wins.
 
 ### Cost (AWS us-east-1 / N. Virginia, est.)
 GPU billed at $2.50/A10-GPU-hr; CPU at $0.45/DBU (Enterprise). Region rates vary.
