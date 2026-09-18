@@ -11,10 +11,11 @@ images and re-run** with no code edits. Each pattern lives in its own folder wit
 notebook `.py`, a `job.json` you can `databricks jobs create` from, and an
 `architecture.md` diagram.
 
-- **Model:** a **ViT-Base/16-224** image classifier (~86M params, 346 MB; a 10-checkpoint
-  weight "soup" — [details](#the-model)). Registered as `…cv.bench_vit@prod` (transformers) —
-  batch patterns load `models:/…bench_vit@prod`; `…cv.bench_vit_serving@prod` (pyfunc,
-  base64→`{label,score}`) backs the P6 endpoint. Labels auto-derive from `id2label`.
+- **Model:** a **ViT-Base/16-224** image classifier (~86M params, 346 MB) — a 10-class
+  Imagenette model built as a weight-averaged "soup" of 10 fine-tuned checkpoints (one load,
+  one forward pass — not a runtime ensemble). Registered as `…cv.bench_vit@prod`
+  (transformers) — batch patterns load `models:/…bench_vit@prod`; `…cv.bench_vit_serving@prod`
+  (pyfunc, base64→`{label,score}`) backs the P6 endpoint. Labels auto-derive from `id2label`.
 - **Datasets:** benchmarked on **COCO val2017** (avg **≈159.5 KB**/image, range 8.7–680 KB)
   and **Imagenette val** (avg **≈7.8 KB**/image, range 1.8–22.2 KB) — **~20× smaller** — both
   the first **3,925 images**, so the only variables are image size + file layout. (Model is
@@ -23,21 +24,6 @@ notebook `.py`, a `job.json` you can `databricks jobs create` from, and an
 - **Setup:** run [`00_setup_register_model.py`](00_setup_register_model.py) once — it
   registers both models, creates the output volumes, and (optionally) deploys the GPU
   serving endpoint for P6.
-
-## The model
-
-All six patterns run the **same** classifier so timings are comparable:
-
-- **Architecture:** ViT-Base/16-224 (`ViTForImageClassification`) — 224×224 input, 16×16
-  patches, hidden 768, 12 layers, 12 heads. **~86M parameters, 346 MB** on disk (fp32
-  `safetensors`).
-- **Task:** 10-class **Imagenette** classifier; labels auto-derived from `id2label` (so
-  swapping in any HF classifier just works).
-- **Assembly — a weight-averaged "model soup".** 10 independently fine-tuned checkpoints
-  (`checkpoint-01…10`) averaged into **one** weight set. This is *not* a runtime ensemble:
-  it stays a single model (**one load, one forward pass**), so per-image inference costs the
-  same as a plain ViT-Base — not N× for N checkpoints. (A *logit ensemble* would be N loads +
-  N passes; see [What determines the best pattern](#what-determines-the-best-pattern).)
 
 ## The six patterns
 
