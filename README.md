@@ -119,7 +119,7 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
 6. **The served model equals direct inference.** P6 (endpoint) vs P3 (direct) match 99.95%
    (2/3,925 borderline argmax flips from GPU fp16 vs CPU fp32).
 
-## Cost (AWS us-east-1 / N. Virginia)
+## Cost Reference (AWS us-east-1 / N. Virginia)
 
 Measured from `system.billing.usage × system.billing.list_prices` (Enterprise, settled
 billing) for one 3,925-image COCO run per pattern. GPU compute bills under the serverless
