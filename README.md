@@ -1,4 +1,4 @@
-# Databricks Batch Inference — Pattern Comparison (P1–P6)
+# Databricks Batch Inference with I/O — Pattern Comparison (P1–P6)
 
 > **▶ [View the slide deck (rendered)](https://raw.githack.com/jiayi-wu-3150/databricks-coco-batch-inference/main/batch_inference_deck.html)** — a visual walkthrough of the benchmark, the six patterns, and when to use each. (The [`batch_inference_deck.html`](batch_inference_deck.html) file renders as a live deck at that link; GitHub shows the raw source.)
 
