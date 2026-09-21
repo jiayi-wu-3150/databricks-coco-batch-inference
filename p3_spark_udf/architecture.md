@@ -29,3 +29,9 @@ horizontal scale.
 **Cost (us-east-1, settled billing):** **~$1.59/run** — 3.53 DBU on Jobs Serverless Compute
 ($0.45/DBU). ~4× a GPU pattern: CPU inference is slower and fans across several billed
 workers.
+
+**Tuning — `num_partitions` helps at scale, `CHUNK` doesn't.** At this scale P3 is
+write-bound, not inference-bound, so raising the inference micro-batch `CHUNK` (8 → 16 → 32)
+does nothing useful (it was flat-to-slightly-worse). `num_partitions` 128 → 256 gave a small
+win (**−3.5%**, COCO val 5,000) — but this lever pays off far more at **118K**, where it drove
+the **3.8× throughput scaling**; at 5K there aren't enough images to feed a bigger pool.

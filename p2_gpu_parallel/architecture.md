@@ -27,3 +27,10 @@ warm the target prefix if you can.
 
 **Cost (us-east-1, settled billing):** **~$0.25/run** — 0.39 DBU on the serverless GPU
 Model Training SKU. Cheapest pattern (short GPU hold).
+
+**Tuning — `write_workers` is already at the single-node ceiling.** Raising it 32 → 48 → 64
+barely moved the write stage (**354s → 362s → 353s**, COCO val 5,000): the write is saturated
+on **single-node S3 bandwidth**, not thread count, so more threads buy nothing. (A worse
+*total* at w48 was just run-to-run noise in the cold model-load/inference, not the knob.)
+Leave it at 32 — to write faster you need *more nodes* (a distributed pattern, P3/P4), not
+more threads.

@@ -26,3 +26,9 @@ binary table.
 
 **Cost (us-east-1, settled billing):** **~$1.76/run** — 3.91 DBU on Jobs Serverless Compute
 ($0.45/DBU). Highest of the six: P3's CPU inference cost plus the extra binary-ingest stage.
+
+**Tuning — raise `num_partitions` at scale, leave `CHUNK` at 8.** `num_partitions` 128 → 256
+was ~flat at 5,000 imgs (its payoff is at **118K**, where it drove **4× scaling**). Raising
+the inference micro-batch `CHUNK` 8 → 16 **hurt** — inference jumped **384s → 528s** (COCO val
+5,000), likely GC/memory pressure from decoding 16 images at once in the binary-table UDF.
+Keep `CHUNK=8`.
