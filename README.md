@@ -1,5 +1,7 @@
 # Databricks Batch Inference — Pattern Comparison (P1–P6)
 
+> **▶ [View the slide deck (rendered)](https://raw.githack.com/jiayi-wu-3150/databricks-coco-batch-inference/main/batch_inference_deck.html)** — a visual walkthrough of the benchmark, the six patterns, and when to use each. (The [`batch_inference_deck.html`](batch_inference_deck.html) file renders as a live deck at that link; GitHub shows the raw source.)
+
 Six batch-inference patterns for running a ViT image classifier over images on
 **Databricks serverless compute**, benchmarked head-to-head. The goal is to compare
 *compute strategies* (single-node GPU vs. distributed CPU vs. serving endpoint) and *I/O
