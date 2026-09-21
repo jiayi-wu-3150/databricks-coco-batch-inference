@@ -39,3 +39,14 @@ argmax flips from GPU fp16 vs CPU fp32).
 **Cost (us-east-1, settled billing):** **~$1.4/run** — ~$1.14 CPU caller (2.54 DBU on Jobs
 Serverless) + ~$0.25 GPU endpoint (Serverless Real-Time Inference). Two compute resources at
 once; scale-to-zero limits idle endpoint cost between runs.
+
+**Tuning — the P6 knob is endpoint concurrency, not the caller.** `ai_query` throughput is
+bound by how many endpoint replicas serve concurrently. Bumping the endpoint `workload_size`
+**Small → Medium** roughly *doubled* `ai_query` (COCO val, 5,000 imgs: **263s → 125s**, 19 →
+40 img/s) and cut total wall **552s → 418s (−24%)**. This confirms `ai_query` was purely
+endpoint-concurrency-bound. The bottleneck then **shifts off `ai_query`** (now 125s) onto the
+write stage (~240s) + base64 (~53s), so a further bump to Large helps less — tune the stage
+that's actually dominant. **Cost stays ≈flat per run:** Medium provisions ~2× GPU but
+`ai_query` time roughly halves, so endpoint DBU/run is about the same, and scale-to-zero keeps
+idle cost unchanged. (`num_partitions` on the caller tunes the base64 + write fan-out, not the
+`ai_query` rate.)
