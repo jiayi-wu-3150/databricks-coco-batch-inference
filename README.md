@@ -59,12 +59,14 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
 
 ## Key findings
 
-1. **The winner is not always the same — benchmark on *your* workload.** Both datasets are
-   3,925 images, cold, single-run, so this isolates image size + file layout. The fast tier
-   (P2/P5/P6) lands within ~40s on both, but the exact winner shuffles: by **billed job
-   time** P6 is quickest on COCO (405s — it has the lightest startup) and P5 on Imagenette
-   (431s). P2 *warm* (~155s wall) would beat either, but it's the least consistent. These are
+1. **The winner is not always the same — benchmark on *your* workload.** The ranking flips on
+   **two** axes: image size / file layout (at fixed count) *and* dataset scale. These are
    **reference templates and a benchmark harness**, not a one-size-fits-all recommendation.
+
+   **By image size & layout (both datasets 3,925 imgs, cold, billed job time).** The fast tier
+   (P2/P5/P6) lands within ~40s on both, but the exact winner shuffles: P6 is quickest on COCO
+   (405s — lightest startup) and P5 on Imagenette (431s). P2 *warm* (~155s wall) would beat
+   either, but it's the least consistent.
 
    | Pattern | Imagenette job time | COCO job time | What changed |
    |---------|:-------------------:|:-------------:|--------------|
@@ -79,14 +81,38 @@ the script timer — compare *patterns* with script wall, plan *cost/wall-clock*
    (six GPU jobs launched at once); queue time isn't billed — its compute was ~740s (629s
    script wall + startup).
 
+   **By scale — the ranking *inverts* (COCO, 5,000 → 118,287 imgs, script wall).** At ~5K the
+   single-node GPU patterns win or tie; at 118K the **distributed-CPU** patterns (P3/P4) win
+   decisively, because they fan writes across an autoscaling worker pool while P1/P2/P5 are
+   bounded by one node. P3 finishes 118K in **38 min vs P1's 5h 44m (9×) and P5's 2h 16m
+   (3.6×)**. Throughput (img/s) shows why:
+
+   | Pattern | 5,000 imgs | 118,287 imgs | Scaling |
+   |---------|:----------:|:------------:|---------|
+   | P3 — Spark UDF (CPU) | 13.4 | **51.4** (38 min) | **3.8×** — autoscales workers |
+   | P4 — Auto Loader (CPU) | 11.3 | **45.4** (43 min) | **4.0×** — autoscales workers |
+   | P6 — ai_query (endpoint) | 9.1 | 26.6 (74 min) | 2.9× — endpoint + distributed writes |
+   | P5 — Ray staged (GPU) | 13.3 | 14.7 (2h 16m) | ~flat — one GPU actor |
+   | P2 — GPU parallel | 11.3 | 12.3 (2h 40m) | ~flat — one node's write threads |
+   | P1 — GPU serial | 6.1 | 5.7 (5h 44m) | ~flat — serial, single node |
+
+   The takeaway: **below ~5K images pick a single-node GPU pattern (P5/P2); at ~100K+ go
+   distributed CPU (P3/P4).** The write bottleneck that dominates P1/P2/P5 is bounded by one
+   node; Spark's `mapInPandas` scales it horizontally, so the more images you process, the
+   better P3/P4 look.
+
 2. **This workload is I/O-bound on writes, not compute.** GPU inference is only ~50–75s;
    P1's serial annotated-JPEG write to the UC Volume is 560–635s = ~86% of its runtime.
 3. **Parallelizing writes is the biggest single win** on a warm prefix (P2 warm ~155s), but
    the parallel write burst is exactly what trips S3 per-prefix throttling on a **cold**
    prefix (P2 cold 358s) — so P2 is the **least consistent** (2.3× cold/warm swing) while
    serial P1 is the **most consistent**.
-4. **P5 (Ray) is the most dataset-stable** — ~350s script wall on both datasets (≈441s/431s
-   billed), because time is dominated by the single GPU inference stage, not file size or count.
+4. **P5 (Ray) is the most dataset-*size*-stable at fixed count — but doesn't scale
+   horizontally.** At 3,925 imgs it's ~350s script wall on both COCO and Imagenette
+   (≈441s/431s billed), because time is dominated by the single GPU inference stage, not file
+   size. But that single GPU actor is also a ceiling: its throughput stays ~flat (13.3 → 14.7
+   img/s) from 5K to 118K (see finding #1), so unlike the distributed-CPU patterns it can't
+   trade more workers for more speed as the dataset grows.
 5. **File *layout and count* matter as much as total bytes.** The patterns that lean on
    directory listing / per-file endpoint calls (P4 ingest, P6 `ai_query`) are the ones that
    slow down on Imagenette's many small nested files — even though the total data is smaller.
